@@ -2,103 +2,319 @@ name: Build Hossam OneState Filters APK
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   build:
+
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Checkout
+      # ==========================================
+      # 1. تحميل المستودع
+      # ==========================================
+
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
+
+      # ==========================================
+      # 2. Java 17
+      # ==========================================
+
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
 
-      - name: Find ZIP
+      # ==========================================
+      # 3. إيجاد ملف ZIP
+      # ==========================================
+
+      - name: Find Project ZIP
+        shell: bash
         run: |
-          ZIP_FILE=$(find . -type f -name "*.zip" -not -path "./.git/*" -print -quit)
+
+          set -e
+
+          echo "Searching for Android ZIP..."
+
+          ZIP_FILE="$(find . -type f -name '*.zip' -not -path './.git/*' -print -quit)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found."
+            echo "ERROR: No ZIP file found in repository."
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
+          echo "ZIP found:"
+          echo "$ZIP_FILE"
+
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      - name: Extract ZIP
+
+      # ==========================================
+      # 4. فك ZIP
+      # ==========================================
+
+      - name: Extract Android Project
+        shell: bash
         run: |
+
+          set -e
+
+          echo "Extracting project..."
+
           rm -rf extracted
+
           mkdir -p extracted
+
           unzip -o "$ZIP_FILE" -d extracted
 
-      - name: Find Android Project
-        run: |
-          PROJECT_DIR=$(find extracted -type f -name "settings.gradle.kts" -print -quit)
+          echo "Extraction completed."
 
-          if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR=$(find extracted -type f -name "settings.gradle" -print -quit)
+
+      # ==========================================
+      # 5. البحث عن مشروع Android
+      # ==========================================
+
+      - name: Locate Android Project
+        shell: bash
+        run: |
+
+          set -e
+
+          PROJECT_DIR=""
+
+          SETTINGS_KTS="$(find extracted -type f -name 'settings.gradle.kts' -print -quit)"
+
+          if [ -n "$SETTINGS_KTS" ]; then
+            PROJECT_DIR="$(dirname "$SETTINGS_KTS")"
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android project not found."
-            find extracted -maxdepth 5 -type f
+
+            SETTINGS_GRADLE="$(find extracted -type f -name 'settings.gradle' -print -quit)"
+
+            if [ -n "$SETTINGS_GRADLE" ]; then
+              PROJECT_DIR="$(dirname "$SETTINGS_GRADLE")"
+            fi
+
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+
+            echo "ERROR: Android project not found inside ZIP."
+
+            echo ""
+            echo "Files extracted:"
+            find extracted -maxdepth 5 -type f -print
+
+            exit 1
+
+          fi
+
+          echo "Android project found:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+
+      # ==========================================
+      # 6. التأكد من وجود app
+      # ==========================================
+
+      - name: Verify Android Project
+        shell: bash
+        run: |
+
+          set -e
+
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "ERROR: app folder not found."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$PROJECT_DIR")
+          if [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "Found app/build.gradle.kts"
+          elif [ -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "Found app/build.gradle"
+          else
+            echo "ERROR: app Gradle file not found."
+            exit 1
+          fi
 
-          echo "Android project: $PROJECT_DIR"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Fix JVM 17
+      # ==========================================
+      # 7. إصلاح Java/Kotlin إلى JVM 17
+      # ==========================================
+
+      - name: Fix JVM Compatibility
+        shell: bash
         run: |
+
+          set -e
+
           cd "$PROJECT_DIR"
 
-          echo "Fixing Java and Kotlin JVM targets..."
+          echo "Configuring JVM 17..."
 
           if [ -f "app/build.gradle.kts" ]; then
 
-            sed -i 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' app/build.gradle.kts
-            sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' app/build.gradle.kts
+            sed -i \
+              's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' \
+              app/build.gradle.kts
 
-            printf '%s\n' \
-              '' \
-              '// HOSSAM JVM 17 FIX' \
-              'android {' \
-              '    compileOptions {' \
-              '        sourceCompatibility = JavaVersion.VERSION_17' \
-              '        targetCompatibility = JavaVersion.VERSION_17' \
-              '    }' \
-              '}' \
-              '' \
-              'tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {' \
-              '    kotlinOptions {' \
-              '        jvmTarget = "17"' \
-              '    }' \
-              '}' \
-              >> app/build.gradle.kts
+            sed -i \
+              's/jvmTarget[[:space:]]*=[[:space:]]*"1.8"/jvmTarget = "17"/g' \
+              app/build.gradle.kts
+
+            sed -i \
+              "s/jvmTarget[[:space:]]*=[[:space:]]*'1.8'/jvmTarget = '17'/g" \
+              app/build.gradle.kts
+
+            cat >> app/build.gradle.kts <<'EOF'
+
+/*
+ * HOSSAM JVM COMPATIBILITY
+ */
+
+android {
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+EOF
 
           elif [ -f "app/build.gradle" ]; then
 
-            sed -i 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' app/build.gradle
-            sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' app/build.gradle
+            sed -i \
+              's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' \
+              app/build.gradle
 
-            printf '%s\n' \
-              '' \
-              '// HOSSAM JVM 17 FIX' \
-              'android {' \
-              '    compileOptions {' \
-              '        sourceCompatibility JavaVersion.VERSION_17' \
-              '        targetCompatibility JavaVersion.VERSION_17
+            sed -i \
+              's/jvmTarget[[:space:]]*=[[:space:]]*"1.8"/jvmTarget = "17"/g' \
+              app/build.gradle
+
+            sed -i \
+              "s/jvmTarget[[:space:]]*=[[:space:]]*'1.8'/jvmTarget = '17'/g" \
+              app/build.gradle
+
+            cat >> app/build.gradle <<'EOF'
+
+/*
+ * HOSSAM JVM COMPATIBILITY
+ */
+
+android {
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+EOF
+
+          fi
+
+          echo "JVM configuration completed."
+
+
+      # ==========================================
+      # 8. تثبيت Gradle 8.9
+      # ==========================================
+
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+
+      # ==========================================
+      # 9. التأكد من Java و Gradle
+      # ==========================================
+
+      - name: Check Build Environment
+        shell: bash
+        run: |
+
+          java -version
+
+          echo ""
+
+          gradle --version
+
+
+      # ==========================================
+      # 10. تنظيف المشروع
+      # ==========================================
+
+      - name: Clean Project
+        shell: bash
+        run: |
+
+          cd "$PROJECT_DIR"
+
+          gradle clean \
+            --no-daemon \
+            --stacktrace
+
+
+      # ==========================================
+      # 11. بناء APK
+      # ==========================================
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+
+          cd "$PROJECT_DIR"
+
+          gradle assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+
+      # ==========================================
+      # 12. البحث عن APK
+      # ==========================================
+
+      - name: Find APK
+        shell: bash
+        run: |
+
+          echo "=================================="
+          echo "GENERATED APK FILES"
+          echo "=================================="
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
+
+
+      # ==========================================
+      # 13. رفع APK
+      # ==========================================
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hossam-OneState-Filters-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
